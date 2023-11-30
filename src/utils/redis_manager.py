@@ -3,16 +3,22 @@ import json
 
 import redis
 
+from utils.exceptions import RedisConnectionError
 
-class RedisConnectionError(Exception):
-    def __init__(self, message=None):
-        super().__init__()
-        self.message = message
+
+def hash_password(password):
+    """
+
+    :param password:
+    :return:
+    """
+    # Implement a more secure hashing mechanism
+    return hashlib.sha256(password.encode()).hexdigest()
 
 
 class RedisManager:
     def __init__(self, host='localhost', port=6379, db=0):
-        self.redis_client = redis.Redis(host=host, port=port, db=db)
+        self.__redis_client = redis.Redis(host=host, port=port, db=db)
         # check redis connection
         self.check_connection()
 
@@ -21,7 +27,7 @@ class RedisManager:
         Check if a connection can be established to Redis.
         """
         try:
-            self.redis_client.ping()
+            self.__redis_client.ping()
             print("Successfully connected to Redis.")
         except (redis.exceptions.ConnectionError, redis.exceptions.BusyLoadingError) as e:
             print(f"Failed to connect to Redis: {e}")
@@ -33,39 +39,29 @@ class RedisManager:
         Data is stored in JSON format.
         """
         json_data = json.dumps(data)
-        self.redis_client.set(key, json_data, ex=expiry)
+        self.__redis_client.set(key, json_data, ex=expiry)
 
     def get_data(self, key):
         """
         Retrieve data from Redis. Data is returned in Python dictionary format.
         """
-        data = self.redis_client.get(key)
+        data = self.__redis_client.get(key)
         return json.loads(json.loads(data)) if data else None
 
     def delete_data(self, key):
         """
         Delete data associated with a key in Redis.
         """
-        self.redis_client.delete(key)
+        self.__redis_client.delete(key)
 
     def update_expiry(self, key, expiry):
         """
         Update the expiry time of a key in Redis.
         """
-        self.redis_client.expire(key, expiry)
+        self.__redis_client.expire(key, expiry)
 
     def get_all_keys(self):
-        print(self.redis_client.keys('*'))
-
-
-def hash_password(password):
-    """
-
-    :param password:
-    :return:
-    """
-    # Implement a more secure hashing mechanism
-    return hashlib.sha256(password.encode()).hexdigest()
+        print(self.__redis_client.keys('*'))
 
 
 class RedisServerManager(RedisManager):
@@ -117,7 +113,7 @@ class RedisServerManager(RedisManager):
 
         :return:
         """
-        return self.redis_client.smembers("active_users")
+        return self.__redis_client.smembers("active_users")
 
     def get_all_user(self, username):
         """
@@ -125,18 +121,18 @@ class RedisServerManager(RedisManager):
         :param username:
         :return:
         """
-        return self.redis_client.hgetall(f"user:{username}")
+        return self.__redis_client.hgetall(f"user:{username}")
 
     def __save_user(self, username, password):
         # TODO what if user already exists
         password_hash = hash_password(password)
-        self.redis_client.hset(f"user:{username}", mapping={"password_hash": password_hash})
+        self.__redis_client.hset(f"user:{username}", mapping={"password_hash": password_hash})
 
     def __delete_user(self, username):
-        self.redis_client.delete(f"user:{username}")
+        self.__redis_client.delete(f"user:{username}")
 
     def __authenticate_user(self, username, password, hashed=True):
-        stored_password = self.redis_client.hget(f"user:{username}", "password_hash")
+        stored_password = self.__redis_client.hget(f"user:{username}", "password_hash")
         if not stored_password:
             return False
 
@@ -148,11 +144,11 @@ class RedisServerManager(RedisManager):
 
     def __add_active_user(self, username):
         if username not in self.get_active_users():
-            self.redis_client.sadd("active_users", username)
-            print(f"User {username} added to active users !")
+            self.__redis_client.sadd("active_users", username)
+            print(f"[INFO] User {username} added to active users !")
 
     def __remove_active_user(self, username):
-        self.redis_client.srem("active_users", username)
+        self.__redis_client.srem("active_users", username)
 
 
 if __name__ == "__main__":
@@ -165,11 +161,14 @@ if __name__ == "__main__":
     print("Active users: ", test_redis.get_active_users())
     print("Login out user aissa")
     test_redis.logout("aissa")
+    test_redis.logout("jon")
     print("Active users: ", test_redis.get_active_users())
     print("All users: ", test_redis.get_all_user("aissa"))
     print("Delete aissa")
     test_redis.delete_user("aissa")
     print("All users: ", test_redis.get_all_user("aissa"))
     test_redis.add_user("aissa", "test")
+    test_redis.add_user("jon", "test")
+    test_redis.add_user("sofiane", "test")
     print("All users: ", test_redis.get_all_user("aissa"))
     print(f"all user session data ", test_redis.get_data("aissa"))

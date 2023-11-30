@@ -39,5 +39,3 @@ class NetworkSocket:
             conn.close()
         else:
             self._socket.close()
-
-

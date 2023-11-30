@@ -6,24 +6,21 @@ import json
 import threading
 from functools import singledispatchmethod
 
-from src.utils import NetworkSocket, RedisServerManager, ActiveUsersCommand, MessageCommand, SlashMessage, AtMessage, \
+from src.utils import NetworkSocket, RedisServerManager, SlashMessage, AtMessage, \
     parse_message, generate_session_token
 
 
 # TODO Accept requests
-#      Handle messages and redirect to message to users
+#      coroutine to check login expiration, and delete users from active list (prob: when user token expired, user
+#      still have an active session
 #      Handle exceptions
 
 
 class ChatServer:
-    # This is a simple bot command, you can add more if you want
-    __CHAT_CODES = {"/u": lambda r: f"active users {ActiveUsersCommand().execute(r)}",
-                    "@": lambda sender, receiver, conn_clients, msg: MessageCommand().execute(sender, receiver,
-                                                                                              conn_clients, msg)}
 
     def __init__(self, *args):
         # TODO save token in redis with corresponding client address
-        # TODO when internal error, please forward it to client
+        # TODO when internal error, updated redis next launch 
         self._socket = NetworkSocket(args) if args else NetworkSocket()
         # Initialize Redis client
         self._redis = RedisServerManager()
@@ -31,25 +28,26 @@ class ChatServer:
         self.__clients = {}
 
     @singledispatchmethod
-    def handle_message(self, message_wrapper, client_conn, *args):
+    def handle_message(self, *args):
         """
         dispatcher according to message type
-        :param message_wrapper:
-        :param client_conn:
         :param args:
         :return:
         """
         raise NotImplementedError
 
     @handle_message.register
-    def _(self, message_wrapper: SlashMessage, client_conn, *args):
+    def _(self, message_wrapper: SlashMessage, client_conn, username, *args: object):
         # Handling SlashMessage
+        # Get appropriate command
         result = message_wrapper.get_command()
-        self._socket.send_data(f'REQUEST_PROCESSED:\n{result.execute(self._redis) if result else "Nothing to do !"}',
-                               client_conn)
+        # Execute command
+        result = result.execute(redis=self._redis, server_chat_obj=self) if result else "Nothing to do !"
+        # Send back message to current user
+        self._socket.send_data(result, client_conn) if isinstance(result, str) else result(client_conn, username, None)
 
     @handle_message.register
-    def _(self, message_wrapper: AtMessage, client_conn, username, *args):
+    def _(self, message_wrapper: AtMessage, client_conn, username, *args: object):
         # Handling AtMessage
         recipient, message = parse_message(message_wrapper.message)
         if recipient and message:
@@ -67,7 +65,6 @@ class ChatServer:
         hashed_password = self._redis.get_data(username)
         # Check if valid user token
         if hashed_password and hashed_password.get('session_token') == user_token:
-            # TODO process message if starts with /, means get all active users or send a message to a user
             if message.startswith('/'):
                 message_wrapper = SlashMessage(message)
             elif message.startswith('@'):
@@ -103,9 +100,9 @@ class ChatServer:
         session_token = generate_session_token()
         # 30 minutes expiry
         self._redis.set_data(username, json.dumps({'session_token': session_token}), expiry=1800)
-        # TODO send data to specific client address
+        # Send session token to auth request user
         self._socket.send_data(f'SESSION_START:{session_token}', client_conn)
-        # TODO make user available to other users using redis
+        # Save user connection
         self.__clients[username] = client_conn
 
     def __logout_request(self, *args):
@@ -115,7 +112,11 @@ class ChatServer:
         :return:
         """
         # FIXME improve logout using client address and username
-        client_conn, username, _ = args
+        try:
+            client_conn, username, _ = args
+        except ValueError:
+            print('[WARNING] No logout action needed')
+            return
         print(f"[INFO] Logging out client {username}: {client_conn}")
         # Remove user session token
         self._redis.delete_data(username)
@@ -123,8 +124,6 @@ class ChatServer:
         self._redis.logout(username)
         # Remove current user server session
         del self.__clients[username]
-        # FIXME: is logout SESSION_END necessary
-        self._socket.send_data('SESSION_END', client_conn)
         print(f"[DEBUG] User {username} logged out")
 
     def handle_client(self, client_conn):
@@ -141,8 +140,8 @@ class ChatServer:
                 # Call appropriate method
                 if request_method:
                     request_method(client_conn, *args)
-        except ConnectionAbortedError:
-            print("Client forcibly closed the connection.")
+        except (ConnectionAbortedError, ConnectionResetError):
+            print("[WARNING] Client forcibly closed the connection.")
         except Exception as e:
             # TODO send internal error to user
             print(f"[ERROR] Error happened when trying to handle client requests. REASON {e}")
